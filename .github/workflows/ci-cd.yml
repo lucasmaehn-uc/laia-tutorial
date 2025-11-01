@@ -89,7 +89,7 @@ jobs:
       - name: Install dependencies
         run: uv sync
       
-      - name: Train model on remote MLflow
+      - name: Train model and log on remote MLflow
         env:
           MLFLOW_TRACKING_URI: ${{ env.MLFLOW_TRACKING_URI }}
           MLFLOW_TRACKING_USERNAME: ${{ secrets.MLFLOW_USERNAME }}
