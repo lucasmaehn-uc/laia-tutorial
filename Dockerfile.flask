@@ -1,0 +1,14 @@
+FROM python:3.13
+# Install uv (modern Python packaging tool)
+RUN pip install uv
+
+WORKDIR /app
+COPY pyproject.toml uv.lock* ./
+
+# Sync dependencies using uv
+RUN uv sync --frozen
+
+COPY app.py .
+
+# Use uv to run the app within the virtual environment
+CMD ["uv", "run", "python", "app.py"]

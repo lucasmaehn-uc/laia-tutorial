@@ -1,0 +1,221 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  REGISTRY: ghcr.io
+  FLASK_IMAGE_NAME: ${{ github.repository }}/flask-app
+  # Remote MLflow server configuration
+  MLFLOW_TRACKING_URI: http://dsn2026hotcrp.dei.uc.pt:8080
+
+jobs:
+  test-unit:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      
+      - name: Install uv
+        run: pip install uv
+      
+      - name: Install dependencies
+        run: uv sync
+      
+      - name: Run API unit tests
+        run: uv run pytest tests/test_api.py -v
+      
+      - name: Run training unit tests
+        run: uv run pytest tests/test_train.py -v
+
+  build-images:
+    name: Build Docker Image
+    runs-on: ubuntu-latest
+    needs: test-unit
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
+      - name: Build Flask image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile.flask
+          push: false
+          tags: flask-app:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          outputs: type=docker,dest=/tmp/flask-app.tar
+      
+      - name: Upload Flask image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: flask-app-image
+          path: /tmp/flask-app.tar
+          retention-days: 1
+
+  train-model:
+    name: Train Model
+    runs-on: ubuntu-latest
+    needs: build-images
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      
+      - name: Install uv
+        run: pip install uv
+      
+      - name: Install dependencies
+        run: uv sync
+      
+      - name: Train model on remote MLflow
+        env:
+          MLFLOW_TRACKING_URI: ${{ env.MLFLOW_TRACKING_URI }}
+          MLFLOW_TRACKING_USERNAME: ${{ secrets.MLFLOW_USERNAME }}
+          MLFLOW_TRACKING_PASSWORD: ${{ secrets.MLFLOW_PASSWORD }}
+        run: |
+          # Train model and log to remote MLflow server
+          uv run python tests/train_ci.py
+      
+      - name: Save training metadata
+        run: |
+          echo "Training completed at $(date)" > training_metadata.txt
+          echo "MLflow URI: ${{ env.MLFLOW_TRACKING_URI }}" >> training_metadata.txt
+      
+      - name: Upload training metadata
+        uses: actions/upload-artifact@v4
+        with:
+          name: training-metadata
+          path: training_metadata.txt
+          retention-days: 7
+
+  test-e2e:
+    name: End-to-End Tests
+    runs-on: ubuntu-latest
+    needs: train-model
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      
+      - name: Install uv
+        run: pip install uv
+      
+      - name: Install dependencies
+        run: uv sync
+      
+      - name: Download Flask image
+        uses: actions/download-artifact@v4
+        with:
+          name: flask-app-image
+          path: /tmp
+      
+      - name: Load Flask image
+        run: docker load --input /tmp/flask-app.tar
+      
+      - name: Start Flask app
+        run: |
+          docker run -d \
+            --name flask-e2e \
+            -p 8080:8080 \
+            -e MLFLOW_TRACKING_URI=${{ env.MLFLOW_TRACKING_URI }} \
+            flask-app:${{ github.sha }}
+          
+          # Wait for Flask to be ready
+          sleep 10
+      
+      - name: Run E2E tests
+        run: uv run pytest tests/test_e2e.py -v
+      
+      - name: Show container logs on failure
+        if: failure()
+        run: |
+          echo "=== Flask logs ==="
+          docker logs flask-e2e || true
+      
+      - name: Cleanup containers
+        if: always()
+        run: |
+          docker stop flask-e2e || true
+          docker rm flask-e2e || true
+
+  push-staging:
+    name: Push Image to Staging
+    runs-on: ubuntu-latest
+    needs: test-e2e
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Extract metadata for Flask image
+        id: meta-flask
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.FLASK_IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=sha,prefix={{branch}}-
+            type=raw,value=staging,enable={{is_default_branch}}
+      
+      - name: Build and push Flask image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile.flask
+          push: true
+          tags: ${{ steps.meta-flask.outputs.tags }}
+          labels: ${{ steps.meta-flask.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      
+      - name: Download training metadata
+        uses: actions/download-artifact@v4
+        with:
+          name: training-metadata
+          path: training-metadata
+      
+      - name: Show training info
+        run: |
+          echo "=== Training Metadata ==="
+          cat training-metadata/training_metadata.txt
+          echo ""
+          echo "Flask app image pushed to staging!"
+          echo "Uses remote MLflow at: ${{ env.MLFLOW_TRACKING_URI }}"
+
