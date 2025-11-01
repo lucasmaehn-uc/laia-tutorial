@@ -10,6 +10,7 @@ import matplotlib.pyplot as plt
 os.environ["MLFLOW_TRACKING_USERNAME"] = os.getenv("MLFLOW_TRACKING_USERNAME", "user1")
 os.environ["MLFLOW_TRACKING_PASSWORD"] = os.getenv("MLFLOW_TRACKING_PASSWORD", "UserPass123!")
 
+
 # Configure MLflow to use remote server with artifact uploads
 mlflow.set_tracking_uri("http://dsn2026hotcrp.dei.uc.pt:8080")
 
