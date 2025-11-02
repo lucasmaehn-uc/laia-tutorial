@@ -9,16 +9,16 @@ os.environ["MLFLOW_ALLOWED_HOSTS"] = "*"
 # Configure MLflow tracking URI and authentication
 mlflow.set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5050"))
 
-# Set MLflow authentication if credentials are provided
-if os.getenv("MLFLOW_TRACKING_USERNAME"):
-    os.environ["MLFLOW_TRACKING_USERNAME"] = os.getenv("MLFLOW_TRACKING_USERNAME")
-if os.getenv("MLFLOW_TRACKING_PASSWORD"):
-    os.environ["MLFLOW_TRACKING_PASSWORD"] = os.getenv("MLFLOW_TRACKING_PASSWORD")
-
 app = Flask(__name__)
 
-MODEL_NAME = "iris"
-MODEL_STAGE = "production"
+MODEL_NAME = os.getenv('MLFLOW_MODEL_NAME')
+if not MODEL_NAME:
+    raise EnvironmentError("Missing required env var: MLFLOW_MODEL_NAME")
+
+MODEL_STAGE = os.getenv("MODEL_STAGE")
+# MODEL_STAGE = "production"
+if not MODEL_STAGE:
+    raise RuntimeError("❌ Environment variable MODEL_STAGE is required but not set.")
 
 # Try to load model once on startup
 try:

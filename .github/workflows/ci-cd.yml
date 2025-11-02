@@ -10,7 +10,8 @@ env:
   REGISTRY: ghcr.io
   FLASK_IMAGE_NAME: ${{ github.repository }}/serving
   MLFLOW_TRACKING_URI: http://dsn2026hotcrp.dei.uc.pt:8080
-
+  MLFLOW_EXPERIMENT_NAME: iris_test_jrc
+  MLFLOW_MODEL_NAME: iris_model_name
 jobs:
   test-unit:
     # Continuous Integration - run light tests
@@ -126,6 +127,41 @@ jobs:
             -e MLFLOW_TRACKING_PASSWORD \
             training:${{ github.sha }}
 
+      - name: Extract metadata (same rules as build)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.FLASK_IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=sha,prefix={{branch}}-
+            type=raw,value=staging,enable={{is_default_branch}}
+
+      - name: Create promoted OCI manifest with labels
+        run: |
+          src="serving:${{ github.sha }}"
+          for tag in ${{ steps.meta.outputs.tags }}; do
+            docker buildx imagetools create \
+              --tag "$tag" \
+              $(printf -- "--annotation %s " ${{ steps.meta.outputs.labels }}) \
+              "$src"
+          done
+
+      - name: Log in to GHCR
+        if: success()
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push tags
+        if: success()
+        run: |
+          for TAG in ${{ steps.meta.outputs.tags }}; do
+            docker push "$TAG"
+          done
+
       - name: Save training metadata
         run: |
           echo "Training completed at $(date)" > training_metadata.txt
@@ -138,7 +174,7 @@ jobs:
           path: training_metadata.txt
           retention-days: 7
 
-  test-e2e:
+  staging:
     # Continuous Staging - best model selected test E2E
     name: End-to-End Tests
     runs-on: ubuntu-latest
@@ -158,25 +194,33 @@ jobs:
       
       - name: Install dependencies
         run: uv sync
-      
-      - name: Download Flask image
-        uses: actions/download-artifact@v4
+
+      - name: Log in to GHCR
+        if: success()
+        uses: docker/login-action@v3
         with:
-          name: serving-image
-          path: /tmp
-      
-      - name: Load Flask image
-        run: docker load --input /tmp/serving.tar
-      
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull Flask image
+        run: docker pull ${{ env.REGISTRY }}/${{ env.FLASK_IMAGE_NAME }}:staging
+
       - name: Start Flask app
+        env:
+          MLFLOW_TRACKING_URI: ${{ env.MLFLOW_TRACKING_URI }}
+          MLFLOW_TRACKING_USERNAME: ${{ secrets.MLFLOW_USERNAME }}
+          MLFLOW_TRACKING_PASSWORD: ${{ secrets.MLFLOW_PASSWORD }}
+          MODEL_STAGE: 'staging'
         run: |
           docker run -d \
-            --name flask-e2e \
+            --name serving-app \
             -p 8080:8080 \
-            -e MLFLOW_TRACKING_URI=${{ env.MLFLOW_TRACKING_URI }} \
-            -e MLFLOW_TRACKING_USERNAME=${{ secrets.MLFLOW_USERNAME }} \
-            -e MLFLOW_TRACKING_PASSWORD=${{ secrets.MLFLOW_PASSWORD }} \
-            serving:${{ github.sha }}
+            -e MLFLOW_TRACKING_URI \
+            -e MLFLOW_TRACKING_USERNAME \
+            -e MLFLOW_TRACKING_PASSWORD \
+            -e MODEL_STAGE \
+            ${{ env.REGISTRY }}/${{ env.FLASK_IMAGE_NAME }}:staging
           
           # Wait for Flask to be ready
           sleep 10
@@ -188,53 +232,42 @@ jobs:
         if: failure()
         run: |
           echo "=== Flask logs ==="
-          docker logs flask-e2e || true
+          docker logs serving-app || true
       
       - name: Cleanup containers
         if: always()
         run: |
-          docker stop flask-e2e || true
-          docker rm flask-e2e || true
+          docker stop serving-app || true
+          docker rm serving-app || true
 
-  push-staging:
+      - name: Tag staging as production
+        if: success()
+        run: |
+          docker tag \
+            ${{ env.REGISTRY }}/${{ env.FLASK_IMAGE_NAME }}:staging \
+            ${{ env.REGISTRY }}/${{ env.FLASK_IMAGE_NAME }}:production
+
+      - name: Push production tag
+        if: success()
+        run: docker push ${{ env.REGISTRY }}/${{ env.FLASK_IMAGE_NAME }}:production
+
+      - name: Promote ML model to production
+        if: success()
+        env:
+          MLFLOW_TRACKING_URI: ${{ env.MLFLOW_TRACKING_URI }}
+          MLFLOW_TRACKING_USERNAME: ${{ secrets.MLFLOW_USERNAME }}
+          MLFLOW_TRACKING_PASSWORD: ${{ secrets.MLFLOW_PASSWORD }}
+        run: |
+          uv run python promote_to_production.py
+
+  push-production:
     name: Push Image to Staging
     runs-on: ubuntu-latest
-    needs: test-e2e
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
-    
+    needs: staging
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
-      # Fetch previously built inference image
-      - name: Download CI built image
-        uses: actions/download-artifact@v4
-        with:
-          name: serving-image
-          path: /tmp
-
-      - name: Load Docker image
-        run: docker load -i /tmp/serving.tar
-
-      - name: Extract metadata (same rules as build)
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.FLASK_IMAGE_NAME }}
-          tags: |
-            type=ref,event=branch
-            type=sha,prefix={{branch}}-
-            type=raw,value=staging,enable={{is_default_branch}}
-            
-      - name: Create promoted OCI manifest with labels
-        run: |
-          src="serving:${{ github.sha }}"
-          for tag in ${{ steps.meta.outputs.tags }}; do
-            docker buildx imagetools create \
-              --tag "$tag" \
-              $(printf -- "--annotation %s " ${{ steps.meta.outputs.labels }}) \
-              "$src"
-          done
 
       - name: Log in to GHCR
         uses: docker/login-action@v3
@@ -243,23 +276,31 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Push tags
-        run: |
-          for TAG in ${{ steps.meta.outputs.tags }}; do
-            docker push "$TAG"
-          done
+      - name: Pull Flask image
+        run: docker pull ${{ env.REGISTRY }}/${{ env.FLASK_IMAGE_NAME }}:production
 
-      - name: Download training metadata
-        uses: actions/download-artifact@v4
-        with:
-          name: training-metadata
-          path: training-metadata
-      
-      - name: Show training info
+      - name: Stop existing container
         run: |
-          echo "=== Training Metadata ==="
-          cat training-metadata/training_metadata.txt
-          echo ""
-          echo "Flask app image pushed to staging!"
-          echo "Uses remote MLflow at: ${{ env.MLFLOW_TRACKING_URI }}"
-
+          if [ "$(docker ps -q -f name=serving-app)" ]; then
+            echo "Stopping existing container..."
+            docker stop serving-app || true
+            docker rm serving-app || true
+          else
+            echo "No running container found, skipping stop"
+          fi
+          -
+      - name: Deploy serving
+        env:
+          MLFLOW_TRACKING_URI: ${{ env.MLFLOW_TRACKING_URI }}
+          MLFLOW_TRACKING_USERNAME: ${{ secrets.MLFLOW_USERNAME }}
+          MLFLOW_TRACKING_PASSWORD: ${{ secrets.MLFLOW_PASSWORD }}
+          MODEL_STAGE: 'production'
+        run: |
+          docker run -d \
+            --name serving-app \
+            -p 8080:8080 \
+            -e MLFLOW_TRACKING_URI \
+            -e MLFLOW_TRACKING_USERNAME \
+            -e MLFLOW_TRACKING_PASSWORD \
+            -e MODEL_STAGE \
+            ${{ env.REGISTRY }}/${{ env.FLASK_IMAGE_NAME }}:production
