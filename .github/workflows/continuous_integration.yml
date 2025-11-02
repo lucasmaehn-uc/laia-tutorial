@@ -6,11 +6,13 @@ on:
   pull_request:
     branches: [ main ]
 
+  workflow_dispatch:
+    
 env:
-  REGISTRY: ghcr.io
-  MLFLOW_TRACKING_URI: http://dsn2026hotcrp.dei.uc.pt:8080
-  MLFLOW_EXPERIMENT_NAME: iris_test_jrc
-  MLFLOW_MODEL_NAME: iris_model_name
+  REGISTRY: ${{ vars.REGISTRY }}
+  MLFLOW_TRACKING_URI: ${{ vars.MLFLOW_TRACKING_URI }}
+  MLFLOW_EXPERIMENT_NAME: ${{ vars.MLFLOW_EXPERIMENT_NAME }}
+  MLFLOW_MODEL_NAME: ${{ vars.MLFLOW_MODEL_NAME }}
 
 jobs:
 
