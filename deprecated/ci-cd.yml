@@ -1,0 +1,375 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  REGISTRY: ghcr.io
+  FLASK_IMAGE_NAME: ${{ github.repository }}/serving
+  MLFLOW_TRACKING_URI: http://dsn2026hotcrp.dei.uc.pt:8080
+  MLFLOW_EXPERIMENT_NAME: iris_test_jrc
+  MLFLOW_MODEL_NAME: iris_model_name
+jobs:
+  test-unit:
+    # Continuous Integration - run light tests
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      
+      - name: Install uv
+        run: pip install uv
+      
+      - name: Install dependencies
+        run: uv sync
+      
+      - name: Run API unit tests
+        run: uv run pytest tests/test_api.py -v
+      
+      - name: Run training unit tests
+        run: uv run pytest tests/test_train.py -v
+
+  build-images:
+    # Continuous Integration - tests passed, build training and serving images
+    name: Build Docker Image
+    runs-on: ubuntu-latest
+    needs: test-unit
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build training image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./training/Dockerfile
+          platforms: linux/amd64
+          push: false
+          tags: training:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          outputs: type=docker,dest=/tmp/training.tar
+
+      - name: Upload training image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: training-image
+          path: /tmp/training.tar
+          retention-days: 1
+
+      - name: Build serving image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./serving/Dockerfile.flask
+          platforms: linux/amd64
+          push: false
+          tags: serving:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          outputs: type=docker,dest=/tmp/serving.tar
+      
+      - name: Upload serving image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: serving-image
+          path: /tmp/serving.tar
+          retention-days: 1
+
+  train-model:
+    # Continuous Delivery - passed build, run ml pipeline
+
+    name: Train Model
+    runs-on: ubuntu-latest
+    needs: build-images
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      # Download and load training image artifact into docker
+      - name: Download training image
+        uses: actions/download-artifact@v4
+        with:
+          name: training-image
+          path: /tmp
+
+      - name: Load training image
+        run: docker load --input /tmp/training.tar
+
+      - name: Run training container
+        env:
+          MLFLOW_TRACKING_URI: ${{ env.MLFLOW_TRACKING_URI }}
+          MLFLOW_TRACKING_USERNAME: ${{ secrets.MLFLOW_USERNAME }}
+          MLFLOW_TRACKING_PASSWORD: ${{ secrets.MLFLOW_PASSWORD }}
+          MLFLOW_MODEL_NAME: ${{ env.MLFLOW_MODEL_NAME }}
+          MLFLOW_EXPERIMENT_NAME: ${{ env.MLFLOW_EXPERIMENT_NAME }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          docker run --rm \
+            -e MLFLOW_TRACKING_URI \
+            -e MLFLOW_TRACKING_USERNAME \
+            -e MLFLOW_TRACKING_PASSWORD \
+            -e MLFLOW_MODEL_NAME \
+            -e MLFLOW_EXPERIMENT_NAME \
+            -e COMMIT_SHA \
+            training:${{ github.sha }}
+
+      # If no errors upload images to GHCR
+      - name: Log in to GHCR
+        if: success()
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Process training image; this will not be "promoted", just pushed to repo
+      - name: Push training image
+        if: success()
+        run: |
+          docker tag training:${{ github.sha }} ${{ env.REGISTRY }}/${{ github.repository }}/training:${{ github.sha }}
+          docker push ${{ env.REGISTRY }}/${{ github.repository }}/training:${{ github.sha }}
+
+      # Process serving image, we first need to load it into docker
+      - name: Download serving image
+        uses: actions/download-artifact@v4
+        with:
+          name: serving-image
+          path: /tmp
+
+      - name: Load serving image
+        run: docker load --input /tmp/serving.tar
+
+      - name: Start delivery E2E serving app
+        env:
+          MLFLOW_TRACKING_URI: ${{ env.MLFLOW_TRACKING_URI }}
+          MLFLOW_MODEL_NAME: ${{ env.MLFLOW_MODEL_NAME }}
+          MLFLOW_TRACKING_USERNAME: ${{ secrets.MLFLOW_USERNAME }}
+          MLFLOW_TRACKING_PASSWORD: ${{ secrets.MLFLOW_PASSWORD }}
+          MODEL_STAGE: ${{ github.sha }}
+        run: |
+          docker run -d \
+            --name serving-app \
+            -p 8080:8080 \
+            -e MLFLOW_TRACKING_URI \
+            -e MLFLOW_TRACKING_USERNAME \
+            -e MLFLOW_TRACKING_PASSWORD \
+            -e MODEL_STAGE \
+            -e MLFLOW_MODEL_NAME \
+            serving:${{ github.sha }}
+          
+          # Wait for Flask to be ready
+          sleep 10
+
+      - name: Run E2E tests
+        run: uv run pytest tests/test_e2e.py -v
+
+      - name: Show container logs on failure
+        if: failure()
+        run: |
+          echo "=== Flask logs ==="
+          docker logs serving-app || true
+
+      - name: Cleanup containers
+        if: always()
+        run: |
+          docker stop serving-app || true
+          docker rm serving-app || true
+
+      - name: Promote ML model to production
+        if: success()
+        env:
+          MLFLOW_TRACKING_URI: ${{ env.MLFLOW_TRACKING_URI }}
+          MLFLOW_TRACKING_USERNAME: ${{ secrets.MLFLOW_USERNAME }}
+          MLFLOW_TRACKING_PASSWORD: ${{ secrets.MLFLOW_PASSWORD }}
+          MLFLOW_EXPERIMENT_NAME: ${{ env.MLFLOW_EXPERIMENT_NAME }}
+          MLFLOW_MODEL_NAME: ${{ env.MLFLOW_MODEL_NAME }}
+          FROM_ALIAS: ${{ github.sha }}
+          TO_ALIAS: staging
+        run: |
+          uv run python model-promotion/promote_model.py
+
+      - name: Tag image as staging
+        if: success()
+        run: docker tag serving:${{ github.sha }} ghcr.io/${{ github.repository }}/serving:staging
+
+      - name: Push staging tag
+        if: success()
+        run: docker push ghcr.io/${{ github.repository }}/serving:staging
+
+      - name: Save training metadata
+        run: |
+          echo "Training completed at $(date)" > training_metadata.txt
+          echo "MLflow URI: ${{ env.MLFLOW_TRACKING_URI }}" >> training_metadata.txt
+
+      - name: Upload training metadata
+        uses: actions/upload-artifact@v4
+        with:
+          name: training-metadata
+          path: training_metadata.txt
+          retention-days: 7
+
+  staging:
+    # NOTE: In this demo staging is just rerunning E2E;
+    # Staging would be pre-production environment; here it is simplified for demonstration purposes only
+    name: End-to-End Tests
+    runs-on: ubuntu-latest
+    needs: train-model
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      
+      - name: Install uv
+        run: pip install uv
+      
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Log in to GHCR
+        if: success()
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull Flask image
+        run: docker pull ${{ env.REGISTRY }}/${{ env.FLASK_IMAGE_NAME }}:staging
+
+      - name: Start Flask app
+        env:
+          MLFLOW_TRACKING_URI: ${{ env.MLFLOW_TRACKING_URI }}
+          MLFLOW_MODEL_NAME: ${{ env.MLFLOW_MODEL_NAME }}
+          MLFLOW_TRACKING_USERNAME: ${{ secrets.MLFLOW_USERNAME }}
+          MLFLOW_TRACKING_PASSWORD: ${{ secrets.MLFLOW_PASSWORD }}
+          MODEL_STAGE: 'staging'
+        run: |
+          docker run -d \
+            --name serving-app \
+            -p 8080:8080 \
+            -e MLFLOW_TRACKING_URI \
+            -e MLFLOW_TRACKING_USERNAME \
+            -e MLFLOW_TRACKING_PASSWORD \
+            -e MODEL_STAGE \
+            -e MLFLOW_MODEL_NAME \
+            ${{ env.REGISTRY }}/${{ env.FLASK_IMAGE_NAME }}:staging
+          
+          # Wait for Flask to be ready
+          sleep 10
+      
+      - name: Run E2E tests
+        run: uv run pytest tests/test_e2e.py -v
+      
+      - name: Show container logs on failure
+        if: failure()
+        run: |
+          echo "=== Flask logs ==="
+          docker logs serving-app || true
+      
+      - name: Cleanup containers
+        if: always()
+        run: |
+          docker stop serving-app || true
+          docker rm serving-app || true
+
+      - name: Tag staging as production
+        if: success()
+        run: |
+          docker tag \
+            ${{ env.REGISTRY }}/${{ env.FLASK_IMAGE_NAME }}:staging \
+            ${{ env.REGISTRY }}/${{ env.FLASK_IMAGE_NAME }}:production
+
+      - name: Push production tag
+        if: success()
+        run: docker push ${{ env.REGISTRY }}/${{ env.FLASK_IMAGE_NAME }}:production
+
+      - name: Promote ML model to production
+        if: success()
+        env:
+          MLFLOW_TRACKING_URI: ${{ env.MLFLOW_TRACKING_URI }}
+          MLFLOW_TRACKING_USERNAME: ${{ secrets.MLFLOW_USERNAME }}
+          MLFLOW_TRACKING_PASSWORD: ${{ secrets.MLFLOW_PASSWORD }}
+          MLFLOW_EXPERIMENT_NAME: ${{ env.MLFLOW_EXPERIMENT_NAME }}
+          MLFLOW_MODEL_NAME: ${{ env.MLFLOW_MODEL_NAME }}
+          FROM_ALIAS: staging
+          TO_ALIAS: production
+        run: |
+          uv run python model-promotion/promote_model.py
+
+  push-production:
+    name: Deploy/update
+    runs-on: ubuntu-latest
+    needs: staging
+
+    steps:
+      # Currently this is running in a local runner
+      # If it were fully automated you would connect to an ssh server, use self hosted runners, or similar
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Get production tagged image
+      - name: Pull Flask image
+        run: docker pull ${{ env.REGISTRY }}/${{ env.FLASK_IMAGE_NAME }}:production
+
+      # Check running container if any, stop and (re)deploy
+      # In a production pipeline the infrastructure managament would be decoupled from the model
+      # Should only redeploy the image if the serving infrastructure changed
+      - name: Stop existing container
+        run: |
+          if [ "$(docker ps -q -f name=serving-app)" ]; then
+            echo "Stopping existing container..."
+            docker stop serving-app || true
+            docker rm serving-app || true
+          else
+            echo "No running container found, skipping stop"
+          fi
+          -
+      - name: Deploy serving
+        env:
+          MLFLOW_TRACKING_URI: ${{ env.MLFLOW_TRACKING_URI }}
+          MLFLOW_MODEL_NAME: ${{ env.MLFLOW_MODEL_NAME }}
+          MLFLOW_TRACKING_USERNAME: ${{ secrets.MLFLOW_USERNAME }}
+          MLFLOW_TRACKING_PASSWORD: ${{ secrets.MLFLOW_PASSWORD }}
+          MODEL_STAGE: 'production'
+        run: |
+          docker run -d \
+            --name serving-app \
+            -p 8080:8080 \
+            -e MLFLOW_TRACKING_URI \
+            -e MLFLOW_TRACKING_USERNAME \
+            -e MLFLOW_TRACKING_PASSWORD \
+            -e MODEL_STAGE \
+            -e MLFLOW_MODEL_NAME \
+            ${{ env.REGISTRY }}/${{ env.FLASK_IMAGE_NAME }}:production
