@@ -6,12 +6,19 @@ Intended to run after staging tests succeed.
 import os
 from mlflow.tracking import MlflowClient
 
+from_alias = os.getenv('FROM_ALIAS')
+if not from_alias:
+    raise EnvironmentError("Missing required env var: FROM_ALIAS")
+
+to_alias = os.getenv('TO_ALIAS')
+if not to_alias:
+    raise EnvironmentError("Missing required env var: TO_ALIAS")
 
 model_name = os.getenv('MLFLOW_MODEL_NAME')
 if not model_name:
     raise EnvironmentError("Missing required env var: MLFLOW_MODEL_NAME")
 
-def promote_model(from_alias="staging", to_alias="production"):
+def promote_model():
     mlflow_uri = os.getenv("MLFLOW_TRACKING_URI")
     if not mlflow_uri:
         raise RuntimeError("Missing env var MLFLOW_TRACKING_URI")

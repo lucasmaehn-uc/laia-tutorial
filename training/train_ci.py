@@ -9,6 +9,10 @@ import matplotlib
 matplotlib.use('Agg')  # Use non-interactive backend for CI
 import matplotlib.pyplot as plt
 
+COMMIT_SHA = os.getenv('COMMIT_SHA')
+if not COMMIT_SHA:
+    raise EnvironmentError("Missing required env var: COMMIT_SHA")
+
 MODEL_NAME = os.getenv('MLFLOW_MODEL_NAME')
 if not MODEL_NAME:
     raise EnvironmentError("Missing required env var: MLFLOW_MODEL_NAME")
@@ -96,6 +100,13 @@ def train_model():
         client.set_registered_model_alias(
             name=MODEL_NAME,
             alias="staging",  # or "staging", "canary", etc.
+            version=registered_model.version,
+        )
+
+        # Create alias for commit SHA (truncate for readability)
+        client.set_registered_model_alias(
+            name=MODEL_NAME,
+            alias=COMMIT_SHA,
             version=registered_model.version,
         )
 
