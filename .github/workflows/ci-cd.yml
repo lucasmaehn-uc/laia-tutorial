@@ -142,7 +142,10 @@ jobs:
       - name: Create promoted OCI manifest with labels
         run: |
           src="serving:${{ github.sha }}"
-          for tag in ${{ steps.meta.outputs.tags }}; do
+          
+          echo "Promoting SHA image → staging aliases"
+          echo "${{ steps.meta.outputs.tags }}" | while IFS= read -r tag; do
+            [ -z "$tag" ] && continue
             docker buildx imagetools create \
               --tag "$tag" \
               $(printf -- "--annotation %s " ${{ steps.meta.outputs.labels }}) \
