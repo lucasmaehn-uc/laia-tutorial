@@ -65,8 +65,8 @@ def reload_model():
     try:
         MODEL_STAGE = os.getenv("MODEL_STAGE")
         # MODEL_STAGE = "production"
-        if not MODEL_STAGE:
-            raise RuntimeError("❌ Environment variable MODEL_STAGE is required but not set.")
+        # if not MODEL_STAGE:
+            # raise RuntimeError("❌ Environment variable MODEL_STAGE is required but not set.")
 
         model = mlflow.pyfunc.load_model(model_uri=f"models:/{MODEL_NAME}@{MODEL_STAGE}")
         app.config["MODEL"] = model
