@@ -55,7 +55,7 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: ./Dockerfile.flask
+          file: ./serving/Dockerfile.flask
           platforms: linux/amd64
           push: false
           tags: flask-app:${{ github.sha }}
@@ -203,13 +203,24 @@ jobs:
 
       # Commit a new image layer to apply OCI labels
       - name: Apply labels to loaded image
+        shell: bash
         run: |
           IMAGE_ID=$(docker images --format "{{.ID}}" --filter reference='flask-ci:*' | head -n 1)
+
+          # Capture labels from metadata output safely
+          LABELS="${{ steps.meta.outputs.labels }}"
+
           LABEL_ARGS=""
-          for LABEL in ${{ steps.meta.outputs.labels }}; do
-            LABEL_ARGS="$LABEL_ARGS --label $LABEL"
-          done
-          docker commit $LABEL_ARGS "$IMAGE_ID" promoted-image:latest
+          while IFS= read -r LABEL; do
+            # Skip empty lines
+            [ -z "$LABEL" ] && continue
+            LABEL_ARGS="$LABEL_ARGS --label \"$LABEL\""
+          done <<< "$LABELS"
+
+          echo "Applying labels:"
+          echo "$LABELS"
+
+          eval docker commit $LABEL_ARGS "$IMAGE_ID" promoted-image:latest
 
       # Tag promoted image with all metadata-action tags
       - name: Tag promoted image
