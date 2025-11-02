@@ -52,7 +52,7 @@ def test_flask_model_loaded():
     
     # If model is not loaded, try to reload it
     if not data.get('model_loaded', False):
-        reload_response = requests.post(f"{FLASK_BASE_URL}/reload")
+        reload_response = requests.get(f"{FLASK_BASE_URL}/reload")
         assert reload_response.status_code == 200
         
         # Check again
@@ -69,7 +69,7 @@ def test_prediction_single_sample():
     health_data = health_response.json()
     
     if not health_data.get('model_loaded', False):
-        requests.post(f"{FLASK_BASE_URL}/reload")
+        requests.get(f"{FLASK_BASE_URL}/reload")
         time.sleep(2)
     
     # Make prediction
@@ -98,7 +98,7 @@ def test_prediction_multiple_samples():
     health_data = health_response.json()
     
     if not health_data.get('model_loaded', False):
-        requests.post(f"{FLASK_BASE_URL}/reload")
+        requests.get(f"{FLASK_BASE_URL}/reload")
         time.sleep(2)
     
     # Make prediction with 3 samples (one from each iris class typically)
@@ -136,7 +136,7 @@ def test_prediction_without_model():
 
 def test_model_reload():
     """Test that model can be reloaded."""
-    response = requests.post(f"{FLASK_BASE_URL}/reload")
+    response = requests.get(f"{FLASK_BASE_URL}/reload")
     assert response.status_code == 200
     data = response.json()
     assert 'message' in data or 'error' in data
@@ -154,7 +154,7 @@ def test_prediction_accuracy():
     health_data = health_response.json()
     
     if not health_data.get('model_loaded', False):
-        requests.post(f"{FLASK_BASE_URL}/reload")
+        requests.get(f"{FLASK_BASE_URL}/reload")
         time.sleep(2)
     
     # Test with a typical setosa sample (should predict class 0)
@@ -200,7 +200,7 @@ def test_concurrent_predictions():
     health_data = health_response.json()
     
     if not health_data.get('model_loaded', False):
-        requests.post(f"{FLASK_BASE_URL}/reload")
+        requests.get(f"{FLASK_BASE_URL}/reload")
         time.sleep(2)
     
     payload = {
