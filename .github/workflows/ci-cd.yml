@@ -121,6 +121,8 @@ jobs:
           MLFLOW_TRACKING_URI: ${{ env.MLFLOW_TRACKING_URI }}
           MLFLOW_TRACKING_USERNAME: ${{ secrets.MLFLOW_USERNAME }}
           MLFLOW_TRACKING_PASSWORD: ${{ secrets.MLFLOW_PASSWORD }}
+          MLFLOW_MODEL_NAME: ${{ env.MLFLOW_MODEL_NAME }}
+          MLFLOW_EXPERIMENT_NAME: ${{ env.MLFLOW_EXPERIMENT_NAME }}
         run: |
           docker run --rm \
             -e MLFLOW_TRACKING_URI \
@@ -157,43 +159,10 @@ jobs:
         run: docker load --input /tmp/serving.tar
 
       - name: Tag image as staging
-        run: |
-          docker tag \
-            serving:${{ github.sha }} \
-            ghcr.io/${{ github.repository }}/serving:staging
+        run: docker tag serving:${{ github.sha }} ghcr.io/${{ github.repository }}/serving:staging
 
       - name: Push staging tag
         run: docker push ghcr.io/${{ github.repository }}/serving:staging
-
-      - name: Extract metadata (same rules as build)
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.FLASK_IMAGE_NAME }}
-          tags: |
-            type=ref,event=branch
-            type=sha,prefix={{branch}}-
-            type=raw,value=staging,enable={{is_default_branch}}
-
-      - name: Create promoted OCI manifest with labels
-        run: |
-          src="serving:${{ github.sha }}"
-          
-          echo "Promoting SHA image → staging aliases"
-          echo "${{ steps.meta.outputs.tags }}" | while IFS= read -r tag; do
-            [ -z "$tag" ] && continue
-            docker buildx imagetools create \
-              --tag "$tag" \
-              $(printf -- "--annotation %s " ${{ steps.meta.outputs.labels }}) \
-              "$src"
-          done
-
-      - name: Push tags
-        if: success()
-        run: |
-          for TAG in ${{ steps.meta.outputs.tags }}; do
-            docker push "$TAG"
-          done
 
       - name: Save training metadata
         run: |
@@ -242,6 +211,7 @@ jobs:
       - name: Start Flask app
         env:
           MLFLOW_TRACKING_URI: ${{ env.MLFLOW_TRACKING_URI }}
+          MLFLOW_MODEL_NAME: ${{ env.MLFLOW_MODEL_NAME }}
           MLFLOW_TRACKING_USERNAME: ${{ secrets.MLFLOW_USERNAME }}
           MLFLOW_TRACKING_PASSWORD: ${{ secrets.MLFLOW_PASSWORD }}
           MODEL_STAGE: 'staging'
@@ -300,6 +270,7 @@ jobs:
     needs: staging
 
     steps:
+      # Currently this is running in a local runner; if it were fully automated you would connect to an ssh server or user self hosted runners
       - name: Checkout code
         uses: actions/checkout@v4
 
@@ -326,6 +297,7 @@ jobs:
       - name: Deploy serving
         env:
           MLFLOW_TRACKING_URI: ${{ env.MLFLOW_TRACKING_URI }}
+          MLFLOW_MODEL_NAME: ${{ env.MLFLOW_MODEL_NAME }}
           MLFLOW_TRACKING_USERNAME: ${{ secrets.MLFLOW_USERNAME }}
           MLFLOW_TRACKING_PASSWORD: ${{ secrets.MLFLOW_PASSWORD }}
           MODEL_STAGE: 'production'
