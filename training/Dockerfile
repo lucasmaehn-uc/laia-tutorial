@@ -20,7 +20,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # ---- Copy training code ----
-COPY train_ci.py .
+COPY training/train_ci.py .
 
 # ---- Set default entrypoint ----
 ENTRYPOINT ["python", "train_ci.py"]
