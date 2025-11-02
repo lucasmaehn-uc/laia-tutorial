@@ -46,6 +46,7 @@ jobs:
           push: false
           tags: training:${{ github.sha }}
           outputs: type=docker,dest=/tmp/training.tar
+      - run: docker load --input /tmp/training.tar
 
       # Build serving image and upload to artifacts for use in continuous delivery
       - name: Build serving image
@@ -57,6 +58,7 @@ jobs:
           push: false
           tags: serving:${{ github.sha }}
           outputs: type=docker,dest=/tmp/serving.tar
+      - run: docker load --input /tmp/serving.tar
 
       # Log in to GitHub Container Registry (GHCR)
       # This is the repository where we will upload our images
@@ -80,9 +82,3 @@ jobs:
         run: |
           docker tag serving:${{ github.sha }} ${{ env.REGISTRY }}/${{ github.repository }}/serving:${{ github.sha }}
           docker push ${{ env.REGISTRY }}/${{ github.repository }}/serving:${{ github.sha }}
-
-  finalize:
-    needs: [build-images]
-    runs-on: ubuntu-latest
-    steps:
-      - run: echo "CI complete — artifacts ready"

@@ -16,7 +16,6 @@ env:
   MLFLOW_EXPERIMENT_NAME: ${{ vars.MLFLOW_EXPERIMENT_NAME }}
   MLFLOW_MODEL_NAME: ${{ vars.MLFLOW_MODEL_NAME }}
 
-  GH_TOKEN: ${{ github.token }}
 jobs:
 
   train-model:
