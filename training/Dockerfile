@@ -16,11 +16,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 # ---- Install Python dependencies ----
-COPY requirements.txt .
+COPY training/* .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# ---- Copy training code ----
-COPY training/train_ci.py .
 
 # ---- Set default entrypoint ----
 ENTRYPOINT ["python", "train_ci.py"]
