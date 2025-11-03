@@ -39,9 +39,11 @@ def train_model():
     best_acc = 0
     best_run_id = None
     best_C = None
-    
+
+    C_values = [0.5, 5.0, 50.0]
+
     # Train models with different C values
-    for C in [0.1, 1.0, 10.0]:
+    for C in C_values:
         with mlflow.start_run() as run:
             print(f"Training model with C={C}")
             model = LogisticRegression(max_iter=200, C=C)
